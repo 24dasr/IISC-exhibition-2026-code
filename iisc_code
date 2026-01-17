@@ -1,0 +1,518 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from tkinter import Tk, filedialog, Label, Button, Frame, messagebox, StringVar, OptionMenu, Text, Scrollbar, VERTICAL, RIGHT, Y, LEFT, BOTH, END
+from tkinter import ttk
+from PIL import Image, ImageTk
+from scipy import stats
+
+class MDAColorimetricAnalyzer:
+    def __init__(self):
+        # Default calibration parameters
+        self.slope = 0.1200
+        self.intercept = 0.0038
+        self.r_squared = 0.9994
+        
+        # Calibration data storage
+        self.calibration_concentrations = []
+        self.calibration_absorbances = []
+        
+    def extract_color_intensity(self, image_path, color_channel='blue'):
+        """Extract color intensity from image"""
+        img = cv2.imread(image_path)
+        if img is None:
+            raise ValueError("Could not load image")
+        
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        if color_channel == 'blue':
+            intensity = np.mean(img_rgb[:, :, 2])
+        elif color_channel == 'gray':
+            gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+            intensity = np.mean(gray)
+        elif color_channel == 'red':
+            intensity = np.mean(img_rgb[:, :, 0])
+        elif color_channel == 'green':
+            intensity = np.mean(img_rgb[:, :, 1])
+        else:
+            raise ValueError("Invalid color channel")
+        
+        return intensity, img_rgb
+    
+    def calculate_absorbance(self, sample_intensity, white_intensity):
+        """Calculate absorbance using Beer-Lambert law"""
+        if white_intensity == 0:
+            raise ValueError("White reference intensity cannot be zero")
+        absorbance = -np.log10(sample_intensity / white_intensity)
+        return absorbance
+    
+    def add_calibration_point(self, concentration, absorbance):
+        """Add a calibration point"""
+        self.calibration_concentrations.append(concentration)
+        self.calibration_absorbances.append(absorbance)
+    
+    def calculate_calibration_curve(self):
+        """Calculate linear regression for calibration curve"""
+        if len(self.calibration_concentrations) < 2:
+            raise ValueError("Need at least 2 calibration points")
+        
+        slope, intercept, r_value, p_value, std_err = stats.linregress(
+            self.calibration_concentrations, 
+            self.calibration_absorbances
+        )
+        
+        self.slope = slope
+        self.intercept = intercept
+        self.r_squared = r_value ** 2
+        
+        return slope, intercept, r_value ** 2
+    
+    def predict_concentration(self, absorbance):
+        """Predict MDA concentration from absorbance"""
+        concentration = (absorbance - self.intercept) / self.slope
+        return concentration
+    
+    def predict_mda_concentration(self, sample_path, white_reference_path, color_channel='blue'):
+        """Complete analysis pipeline"""
+        # Extract intensities
+        sample_intensity, sample_img = self.extract_color_intensity(sample_path, color_channel)
+        white_intensity, white_img = self.extract_color_intensity(white_reference_path, color_channel)
+        
+        # Calculate absorbance
+        absorbance = self.calculate_absorbance(sample_intensity, white_intensity)
+        
+        # Predict concentration
+        concentration = self.predict_concentration(absorbance)
+        
+        # Get all color channel data for visualization
+        channels_data = {}
+        for ch in ['red', 'green', 'blue']:
+            s_int, _ = self.extract_color_intensity(sample_path, ch)
+            w_int, _ = self.extract_color_intensity(white_reference_path, ch)
+            channels_data[ch] = {'sample': s_int, 'reference': w_int}
+        
+        return concentration, absorbance, sample_intensity, white_intensity, sample_img, white_img, channels_data
+
+
+class MDAApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("MDA Colorimetric Analyzer with Calibration")
+        self.root.geometry("1400x900")
+        
+        self.analyzer = MDAColorimetricAnalyzer()
+        self.sample_path = None
+        self.white_reference_path = None
+        
+        self.setup_ui()
+    
+    def setup_ui(self):
+        # Create notebook for tabs
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        
+        # Analysis Tab
+        self.analysis_frame = Frame(self.notebook)
+        self.notebook.add(self.analysis_frame, text="Analysis")
+        self.setup_analysis_tab()
+        
+        # Calibration Tab
+        self.calibration_frame = Frame(self.notebook)
+        self.notebook.add(self.calibration_frame, text="Calibration")
+        self.setup_calibration_tab()
+    
+    def setup_analysis_tab(self):
+        main_frame = Frame(self.analysis_frame)
+        main_frame.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        
+        # Title
+        title_label = Label(main_frame, text="MDA Colorimetric Analyzer", 
+                          font=("Arial", 16, "bold"))
+        title_label.pack(pady=10)
+        
+        # Instructions
+        instructions = Label(main_frame, 
+                           text="White reference must be taken under SAME conditions as sample!\n"
+                                "Same lighting, camera position, and background.",
+                           font=("Arial", 10), fg="red", justify="center")
+        instructions.pack(pady=5)
+        
+        # Images frame
+        images_frame = Frame(main_frame)
+        images_frame.pack(pady=10, fill="x")
+        
+        # White reference section
+        white_frame = Frame(images_frame)
+        white_frame.grid(row=0, column=0, padx=20)
+        
+        Label(white_frame, text="WHITE REFERENCE", font=("Arial", 11, "bold")).pack(pady=5)
+        self.white_label = Label(white_frame, text="No white reference loaded", 
+                                bg="lightgray", width=40, height=15)
+        self.white_label.pack(pady=5)
+        Button(white_frame, text="Upload White Reference", 
+               command=self.upload_white_reference, width=20).pack(pady=5)
+        
+        # Sample section  
+        sample_frame = Frame(images_frame)
+        sample_frame.grid(row=0, column=1, padx=20)
+        
+        Label(sample_frame, text="SAMPLE", font=("Arial", 11, "bold")).pack(pady=5)
+        self.sample_label = Label(sample_frame, text="No sample loaded", 
+                                 bg="lightgray", width=40, height=15)
+        self.sample_label.pack(pady=5)
+        Button(sample_frame, text="Upload Sample", 
+               command=self.upload_sample, width=20).pack(pady=5)
+        
+        # Controls
+        controls_frame = Frame(main_frame)
+        controls_frame.pack(pady=10)
+        
+        Label(controls_frame, text="Analysis Channel:").grid(row=0, column=0, padx=5)
+        self.channel_var = StringVar(value="blue")
+        OptionMenu(controls_frame, self.channel_var, "blue", "gray", "red", "green").grid(row=0, column=1, padx=5)
+        
+        # Buttons
+        button_frame = Frame(main_frame)
+        button_frame.pack(pady=10)
+        
+        self.analyze_btn = Button(button_frame, text="Analyze MDA Concentration", 
+                                command=self.analyze_and_visualize, width=25, 
+                                state="disabled", bg="#4CAF50", fg="white", 
+                                font=("Arial", 10, "bold"))
+        self.analyze_btn.grid(row=0, column=0, padx=5)
+        
+        Button(button_frame, text="Instructions", 
+               command=self.show_instructions, width=20).grid(row=0, column=1, padx=5)
+        
+        # Calibration info
+        self.calib_info_label = Label(main_frame, 
+                                     text=f"Current Calibration: A = {self.analyzer.slope:.4f}×[MDA] + {self.analyzer.intercept:.4f} (R² = {self.analyzer.r_squared:.4f})",
+                                     font=("Arial", 9), fg="blue")
+        self.calib_info_label.pack(pady=5)
+    
+    def setup_calibration_tab(self):
+        calib_main = Frame(self.calibration_frame)
+        calib_main.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        
+        Label(calib_main, text="Calibration Curve Builder", 
+              font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # Input frame
+        input_frame = Frame(calib_main)
+        input_frame.pack(pady=10)
+        
+        Label(input_frame, text="Enter calibration standards (Concentration, Absorbance):").grid(row=0, column=0, columnspan=4, pady=5)
+        
+        Label(input_frame, text="[MDA] (μM):").grid(row=1, column=0, padx=5)
+        self.conc_entry = ttk.Entry(input_frame, width=15)
+        self.conc_entry.grid(row=1, column=1, padx=5)
+        
+        Label(input_frame, text="Absorbance:").grid(row=1, column=2, padx=5)
+        self.abs_entry = ttk.Entry(input_frame, width=15)
+        self.abs_entry.grid(row=1, column=3, padx=5)
+        
+        Button(input_frame, text="Add Point", command=self.add_calibration_point).grid(row=1, column=4, padx=5)
+        
+        # Data display
+        data_frame = Frame(calib_main)
+        data_frame.pack(pady=10, fill=BOTH, expand=True)
+        
+        Label(data_frame, text="Calibration Data:", font=("Arial", 11, "bold")).pack()
+        
+        self.calib_text = Text(data_frame, height=8, width=60)
+        scrollbar = Scrollbar(data_frame, orient=VERTICAL, command=self.calib_text.yview)
+        self.calib_text.config(yscrollcommand=scrollbar.set)
+        self.calib_text.pack(side=LEFT, fill=BOTH, expand=True)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        
+        # Buttons
+        btn_frame = Frame(calib_main)
+        btn_frame.pack(pady=10)
+        
+        Button(btn_frame, text="Calculate Curve", command=self.calculate_curve, 
+               bg="#2196F3", fg="white", font=("Arial", 10, "bold")).grid(row=0, column=0, padx=5)
+        Button(btn_frame, text="Clear All", command=self.clear_calibration).grid(row=0, column=1, padx=5)
+        Button(btn_frame, text="Load Default", command=self.load_default_calibration).grid(row=0, column=2, padx=5)
+        
+        # Results
+        self.calib_result = Label(calib_main, text="", font=("Arial", 11), fg="green")
+        self.calib_result.pack(pady=10)
+    
+    def add_calibration_point(self):
+        try:
+            conc = float(self.conc_entry.get())
+            absorbance = float(self.abs_entry.get())
+            
+            self.analyzer.add_calibration_point(conc, absorbance)
+            
+            self.calib_text.insert(END, f"[MDA] = {conc:.4f} μM, A = {absorbance:.4f}\n")
+            
+            self.conc_entry.delete(0, END)
+            self.abs_entry.delete(0, END)
+            
+        except ValueError:
+            messagebox.showerror("Error", "Please enter valid numbers")
+    
+    def calculate_curve(self):
+        try:
+            slope, intercept, r_squared = self.analyzer.calculate_calibration_curve()
+            
+            result = f"Calibration Curve Calculated!\n"
+            result += f"A₅₈₆ = {slope:.4f} × [MDA] + {intercept:.4f}\n"
+            result += f"R² = {r_squared:.4f}"
+            
+            self.calib_result.config(text=result)
+            self.calib_info_label.config(
+                text=f"Current Calibration: A = {slope:.4f}×[MDA] + {intercept:.4f} (R² = {r_squared:.4f})"
+            )
+            
+            messagebox.showinfo("Success", "Calibration curve updated!")
+            
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+    
+    def clear_calibration(self):
+        self.analyzer.calibration_concentrations = []
+        self.analyzer.calibration_absorbances = []
+        self.calib_text.delete(1.0, END)
+        self.calib_result.config(text="")
+    
+    def load_default_calibration(self):
+        # Default calibration points from MDA-586 reaction standards
+        # Based on Figure 3: y = 0.1200x + 0.0038, R² = 0.9994
+        defaults = [
+            (0.0, 0.0038),      # Blank
+            (0.5, 0.0638),      # 0.5 μM
+            (1.0, 0.1238),      # 1.0 μM
+            (2.0, 0.2438),      # 2.0 μM
+            (3.0, 0.3638),      # 3.0 μM
+            (4.0, 0.4838)       # 4.0 μM
+        ]
+        
+        self.clear_calibration()
+        for conc, absorbance in defaults:
+            self.analyzer.add_calibration_point(conc, absorbance)
+            self.calib_text.insert(END, f"[MDA] = {conc:.4f} μM, A = {absorbance:.4f}\n")
+        
+        self.calculate_curve()
+    
+    def upload_white_reference(self):
+        file_path = filedialog.askopenfilename(
+            title="Select White Reference Image",
+            filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tiff")]
+        )
+        
+        if file_path:
+            try:
+                image = Image.open(file_path)
+                image.thumbnail((300, 250))
+                photo = ImageTk.PhotoImage(image)
+                
+                self.white_label.configure(image=photo, text="")
+                self.white_label.image = photo
+                self.white_reference_path = file_path
+                self.check_analysis_ready()
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load image: {str(e)}")
+    
+    def upload_sample(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Sample Image",
+            filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tiff")]
+        )
+        
+        if file_path:
+            try:
+                image = Image.open(file_path)
+                image.thumbnail((300, 250))
+                photo = ImageTk.PhotoImage(image)
+                
+                self.sample_label.configure(image=photo, text="")
+                self.sample_label.image = photo
+                self.sample_path = file_path
+                self.check_analysis_ready()
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not load image: {str(e)}")
+    
+    def check_analysis_ready(self):
+        if self.sample_path and self.white_reference_path:
+            self.analyze_btn.config(state="normal")
+    
+    def analyze_and_visualize(self):
+        try:
+            color_channel = self.channel_var.get()
+            
+            concentration, absorbance, sample_intensity, white_intensity, sample_img, white_img, channels_data = \
+                self.analyzer.predict_mda_concentration(self.sample_path, self.white_reference_path, color_channel)
+            
+            # Create visualization window
+            self.show_results_window(concentration, absorbance, sample_intensity, 
+                                    white_intensity, sample_img, white_img, 
+                                    channels_data, color_channel)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Analysis failed: {str(e)}")
+    
+    def show_results_window(self, concentration, absorbance, sample_intensity, 
+                           white_intensity, sample_img, white_img, channels_data, channel):
+        # Create new window
+        results_window = Tk()
+        results_window.title("Analysis Results - MDA Colorimetric Analyzer")
+        results_window.geometry("1400x800")
+        
+        # Create matplotlib figure
+        fig = plt.figure(figsize=(14, 8))
+        
+        # 1. Sample image
+        ax1 = plt.subplot(2, 3, 1)
+        ax1.imshow(sample_img)
+        ax1.set_title("MDA Sample", fontsize=12, fontweight='bold')
+        ax1.axis('off')
+        
+        # 2. White reference
+        ax2 = plt.subplot(2, 3, 2)
+        ax2.imshow(white_img)
+        ax2.set_title("White Reference", fontsize=12, fontweight='bold')
+        ax2.axis('off')
+        
+        # 3. Color channel comparison
+        ax3 = plt.subplot(2, 3, 3)
+        channels = ['Red', 'Green', 'Blue']
+        sample_vals = [channels_data['red']['sample'], 
+                      channels_data['green']['sample'], 
+                      channels_data['blue']['sample']]
+        ref_vals = [channels_data['red']['reference'], 
+                   channels_data['green']['reference'], 
+                   channels_data['blue']['reference']]
+        
+        x = np.arange(len(channels))
+        width = 0.35
+        
+        ax3.bar(x - width/2, sample_vals, width, label='Sample', 
+               color=['#FF6B6B', '#4ECDC4', '#45B7D1'])
+        ax3.bar(x + width/2, ref_vals, width, label='Reference', 
+               color=['#C44569', '#2C7873', '#1A5490'])
+        
+        ax3.set_xlabel('Color Channel', fontweight='bold')
+        ax3.set_ylabel('Color Intensity', fontweight='bold')
+        ax3.set_title('Color Channel Comparison', fontsize=12, fontweight='bold')
+        ax3.set_xticks(x)
+        ax3.set_xticklabels(channels)
+        ax3.legend()
+        ax3.grid(axis='y', alpha=0.3)
+        
+        # 4. Calibration curve with sample point
+        ax4 = plt.subplot(2, 3, 4)
+        
+        conc_range = np.linspace(0, max(12, concentration * 1.2), 100)
+        abs_range = self.analyzer.slope * conc_range + self.analyzer.intercept
+        
+        ax4.plot(conc_range, abs_range, 'b-', linewidth=2, label='Calibration Curve')
+        ax4.plot(concentration, absorbance, 'ro', markersize=10, label='Sample')
+        
+        ax4.set_xlabel('[MDA] (μM)', fontweight='bold')
+        ax4.set_ylabel('A₅₈₆', fontweight='bold')
+        ax4.set_title('Calibration Curve with Sample', fontsize=12, fontweight='bold')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        ax4.set_xlim(left=0)
+        ax4.set_ylim(bottom=0)
+        
+        # 5. Intensity to Absorbance conversion
+        ax5 = plt.subplot(2, 3, 5)
+        
+        intensity_range = np.linspace(1, 255, 100)
+        absorbance_curve = -np.log10(intensity_range / white_intensity)
+        
+        ax5.plot(intensity_range, absorbance_curve, 'g-', linewidth=2)
+        ax5.plot(sample_intensity, absorbance, 'ro', markersize=10, label='Sample')
+        ax5.annotate(f'Sample\nI={sample_intensity:.1f}\nA={absorbance:.3f}', 
+                    xy=(sample_intensity, absorbance), 
+                    xytext=(sample_intensity + 30, absorbance),
+                    arrowprops=dict(arrowstyle='->', color='red'),
+                    fontsize=9)
+        
+        ax5.set_xlabel('Color Intensity (I)', fontweight='bold')
+        ax5.set_ylabel('Absorbance (A₅₈₆)', fontweight='bold')
+        ax5.set_title('Intensity → Absorbance Conversion', fontsize=12, fontweight='bold')
+        ax5.grid(True, alpha=0.3)
+        
+        # 6. Analysis results text
+        ax6 = plt.subplot(2, 3, 6)
+        ax6.axis('off')
+        
+        results_text = f"""
+ANALYSIS RESULTS
+
+Sample Intensity: {sample_intensity:.1f}
+Reference Intensity: {white_intensity:.1f}
+Absorbance (A₅₈₆): {absorbance:.4f}
+MDA Concentration: {concentration:.4f} μM
+
+Calibration:
+A₅₈₆ = {self.analyzer.slope:.4f}×[MDA]
+     + {self.analyzer.intercept:.4f}
+R² = {self.analyzer.r_squared:.4f}
+        """
+        
+        ax6.text(0.1, 0.5, results_text, fontsize=11, family='monospace',
+                verticalalignment='center', 
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        
+        # Embed in tkinter
+        canvas = FigureCanvasTkAgg(fig, master=results_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=BOTH, expand=True)
+        
+        # Save button
+        def save_figure():
+            save_path = filedialog.asksaveasfilename(
+                defaultextension=".png",
+                filetypes=[("PNG files", "*.png"), ("PDF files", "*.pdf"), ("All files", "*.*")]
+            )
+            if save_path:
+                fig.savefig(save_path, dpi=300, bbox_inches='tight')
+                messagebox.showinfo("Success", f"Figure saved to {save_path}")
+        
+        Button(results_window, text="Save Figure", command=save_figure, 
+               bg="#4CAF50", fg="white", font=("Arial", 10, "bold")).pack(pady=10)
+        
+        results_window.mainloop()
+    
+    def show_instructions(self):
+        instructions = """
+PROPER WHITE REFERENCE METHOD:
+
+1. SETUP YOUR EXPERIMENT:
+   - Place white reference (white tile/paper) where sample will be
+   - Take picture with exact experimental setup
+
+2. REPLACE WITH SAMPLE:
+   - Remove white reference
+   - Place MDA solution in SAME position
+   - Take picture WITHOUT changing anything
+
+3. SAME CONDITIONS MEANS:
+   - Same lighting
+   - Same camera position/distance
+   - Same camera settings
+   - Same background
+   - Taken within minutes
+
+4. CALIBRATION:
+   - Use Calibration tab to build curve
+   - Or use default calibration
+        """
+        messagebox.showinfo("Instructions", instructions)
+
+
+# Run the application
+if __name__ == "__main__":
+    root = Tk()
+    app = MDAApp(root)
+    root.mainloop()
