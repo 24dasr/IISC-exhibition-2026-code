@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Microfluidic Chip Analyzer</title>
-<script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.28.0/plotly.min.js"></script>
 
 <style>
   body {
@@ -177,19 +177,28 @@ const rfStatus = document.getElementById("rfStatus");
 const ccpStatus = document.getElementById("ccpStatus");
 const resultsBox = document.getElementById("results");
 
-// Calibration: y = 0.073x - 0.0532
-const SLOPE = 0.073;
-const INTERCEPT = -0.0532;
-const R_SQUARED = 0.9865;
+// Calibration for NMPI-MDA (BLUE INTENSITY METHOD)
+// Since MORE BLUE = MORE MDA, we use direct linear relationship
+// Formula: concentration = (blue_intensity - INTERCEPT) / SLOPE
+// You need to measure YOUR actual blue values and update these!
 
-// Example calibration points for plotting
+const SLOPE = 3.5;          // UPDATE: Blue intensity increase per µM MDA (approx 3.5 units per µM)
+const INTERCEPT = 100;      // UPDATE: Baseline blue intensity at 0 µM
+const R_SQUARED = 0.9865;   // UPDATE: R² from your calibration
+
+// Example calibration points for plotting (UPDATE WITH YOUR DATA!)
+// Format: {conc: MDA concentration (µM), abs: Blue intensity (0-255)}
 const calibrationData = [
-  {conc: 5, abs: 0.31},
-  {conc: 10, abs: 0.68},
-  {conc: 20, abs: 1.41},
-  {conc: 50, abs: 3.60},
-  {conc: 100, abs: 7.25}
+  {conc: 10, abs: 135},   // PLACEHOLDER - measure actual blue values!
+  {conc: 20, abs: 170},   // PLACEHOLDER
+  {conc: 30, abs: 205},   // PLACEHOLDER
+  {conc: 40, abs: 240}    // PLACEHOLDER
 ];
+
+// BLANK RGB VALUE - measure from your blank sample!
+const BLANK_R = 255;  // Not used for blue intensity method
+const BLANK_G = 255;  // Not used for blue intensity method
+const BLANK_B = 100;  // Baseline blue intensity for blank
 
 // Trigger file input
 uploadBox.addEventListener("click", () => fileInput.click());
@@ -216,10 +225,11 @@ function autoDetectZones() {
   const w = canvas.width;
   const h = canvas.height;
 
+  // Updated positions based on actual chip layout
   const zones = {
-    1: ctx.getImageData(w * 0.45, h * 0.60, w * 0.10, h * 0.15),
-    2: ctx.getImageData(w * 0.20, h * 0.35, w * 0.10, h * 0.15),
-    3: ctx.getImageData(w * 0.70, h * 0.35, w * 0.10, h * 0.15)
+    1: ctx.getImageData(w * 0.40, h * 0.70, w * 0.15, h * 0.20),  // Bottom center (Zone 1)
+    2: ctx.getImageData(w * 0.10, h * 0.40, w * 0.15, h * 0.20),  // Left side (Zone 2)
+    3: ctx.getImageData(w * 0.75, h * 0.40, w * 0.15, h * 0.20)   // Right side (Zone 3)
   };
 
   drawZoneBoxes(w, h);
@@ -228,100 +238,103 @@ function autoDetectZones() {
 
 // ---------------- DRAW ZONE BOXES ----------------
 function drawZoneBoxes(w, h) {
+  // Zone 1 - Bottom center (Blue box)
   ctx.strokeStyle = '#38bdf8';
   ctx.lineWidth = 3;
-  ctx.strokeRect(w * 0.45, h * 0.60, w * 0.10, h * 0.15);
+  ctx.strokeRect(w * 0.40, h * 0.70, w * 0.15, h * 0.20);
   ctx.fillStyle = '#38bdf8';
-  ctx.font = 'bold 20px Arial';
-  ctx.fillText('1', w * 0.46, h * 0.62);
+  ctx.font = 'bold 24px Arial';
+  ctx.fillText('1', w * 0.42, h * 0.73);
 
+  // Zone 2 - Left side (Green box)
   ctx.strokeStyle = '#22c55e';
-  ctx.strokeRect(w * 0.20, h * 0.35, w * 0.10, h * 0.15);
+  ctx.strokeRect(w * 0.10, h * 0.40, w * 0.15, h * 0.20);
   ctx.fillStyle = '#22c55e';
-  ctx.fillText('2', w * 0.21, h * 0.37);
+  ctx.fillText('2', w * 0.12, h * 0.43);
 
+  // Zone 3 - Right side (Red box)
   ctx.strokeStyle = '#ef4444';
-  ctx.strokeRect(w * 0.70, h * 0.35, w * 0.10, h * 0.15);
+  ctx.strokeRect(w * 0.75, h * 0.40, w * 0.15, h * 0.20);
   ctx.fillStyle = '#ef4444';
-  ctx.fillText('3', w * 0.71, h * 0.37);
+  ctx.fillText('3', w * 0.77, h * 0.43);
+}
+
+// ---------------- RGB ANALYSIS (NEW METHOD) ----------------
+function analyzeRGB(imageData) {
+  const data = imageData.data;
+  let totalR = 0, totalG = 0, totalB = 0;
+  const totalPixels = data.length / 4;
+
+  for (let i = 0; i < data.length; i += 4) {
+    totalR += data[i];
+    totalG += data[i + 1];
+    totalB += data[i + 2];
+  }
+
+  const avgR = totalR / totalPixels;
+  const avgG = totalG / totalPixels;
+  const avgB = totalB / totalPixels;
+
+  return { avgR, avgG, avgB };
+}
+
+// ---------------- CALCULATE ABSORBANCE ----------------
+function calculateAbsorbance(sampleValue, blankValue) {
+  // A = -log(I/I0)
+  if (sampleValue <= 0 || blankValue <= 0) return 0;
+  return -Math.log10(sampleValue / blankValue);
 }
 
 // ---------------- ANALYSIS ----------------
 function analyze(zones) {
-  const z1 = analyzeBlueHSV(zones[1]);
-  const z2 = analyzeBlueHSV(zones[2]);
-  const z3 = analyzeBlueHSV(zones[3]);
+  const z1_rgb = analyzeRGB(zones[1]);
+  const z2_rgb = analyzeRGB(zones[2]);
+  const z3_rgb = analyzeRGB(zones[3]);
 
-  const absorbance = z1.blueIntensity;
-  const concentration = Math.max(0, (absorbance - INTERCEPT) / SLOPE);
+  // For NMPI-MDA: MORE BLUE = MORE MDA
+  // Use Blue channel directly (not inverted absorbance)
+  const blueIntensity = z1_rgb.avgB;
+  
+  // Calculate concentration from calibration curve
+  // Using blue intensity directly
+  const concentration = Math.max(0, (blueIntensity - INTERCEPT) / SLOPE);
 
   mdaValue.textContent = `${concentration.toFixed(2)} µM`;
-  mdaDetails.textContent = `Blue Intensity: ${absorbance.toFixed(4)}`;
+  mdaDetails.textContent = `Blue Intensity: ${blueIntensity.toFixed(2)} | RGB: (${Math.round(z1_rgb.avgR)}, ${Math.round(z1_rgb.avgG)}, ${Math.round(z1_rgb.avgB)})`;
 
-  rfStatus.textContent = z2.blueDetected ? "Detected" : "Not detected";
-  rfStatus.className = `value ${z2.blueDetected ? "status-positive" : "status-negative"}`;
+  // Qualitative detection for RF and CCP based on blue intensity threshold
+  // Adjust threshold based on your measurements
+  const z2_blueDetected = z2_rgb.avgB > 100;
+  const z3_blueDetected = z3_rgb.avgB > 100;
 
-  ccpStatus.textContent = z3.blueDetected ? "Detected" : "Not detected";
-  ccpStatus.className = `value ${z3.blueDetected ? "status-positive" : "status-negative"}`;
+  rfStatus.textContent = z2_blueDetected ? "Detected" : "Not detected";
+  rfStatus.className = `value ${z2_blueDetected ? "status-positive" : "status-negative"}`;
+
+  ccpStatus.textContent = z3_blueDetected ? "Detected" : "Not detected";
+  ccpStatus.className = `value ${z3_blueDetected ? "status-positive" : "status-negative"}`;
 
   resultsBox.style.display = "grid";
-  drawCalibrationCurve(concentration, absorbance);
-}
-
-// ---------------- HSV BLUE DETECTION ----------------
-function analyzeBlueHSV(imageData) {
-  const data = imageData.data;
-  let bluePixels = 0;
-  let totalBlueIntensity = 0;
-  const total = data.length / 4;
-
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i] / 255;
-    const g = data[i + 1] / 255;
-    const b = data[i + 2] / 255;
-
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    const delta = max - min;
-
-    let hue = 0;
-    if (delta !== 0) {
-      if (max === b) hue = ((r - g) / delta + 4) * 60;
-      else if (max === r) hue = ((g - b) / delta) * 60;
-      else hue = ((b - r) / delta + 2) * 60;
-    }
-
-    const saturation = max === 0 ? 0 : delta / max;
-    const value = max;
-
-    if (hue > 200 && hue < 260 && saturation > 0.3 && value > 0.2) {
-      bluePixels++;
-      totalBlueIntensity += value;
-    }
-  }
-
-  const blueIntensity = bluePixels > 0 ? totalBlueIntensity / bluePixels : 0;
-  const blueDetected = bluePixels > (total * 0.05);
-
-  return { blueIntensity, blueDetected };
+  drawCalibrationCurve(concentration, blueIntensity);
 }
 
 // ---------------- CALIBRATION CURVE ----------------
-function drawCalibrationCurve(measuredConc, measuredAbs) {
+function drawCalibrationCurve(measuredConc, measuredBlueIntensity) {
   const concRange = [];
-  const absRange = [];
-  for (let c = 0; c <= 120; c++) {
+  const blueRange = [];
+  
+  // Generate calibration line from 0 to 50 µM
+  for (let c = 0; c <= 50; c++) {
     concRange.push(c);
-    absRange.push(SLOPE * c + INTERCEPT);
+    blueRange.push(SLOPE * c + INTERCEPT);
   }
 
   const calibrationTrace = {
     x: concRange,
-    y: absRange,
+    y: blueRange,
     type: 'scatter',
     mode: 'lines',
     name: 'Calibration Curve',
-    line: { width: 3 }
+    line: { width: 3, color: '#3b82f6' }
   };
 
   const pointsTrace = {
@@ -330,32 +343,50 @@ function drawCalibrationCurve(measuredConc, measuredAbs) {
     type: 'scatter',
     mode: 'markers',
     name: 'Calibration Points',
-    marker: { size: 10 }
+    marker: { size: 10, color: '#10b981' }
   };
 
   const sampleTrace = {
     x: [measuredConc],
-    y: [measuredAbs],
+    y: [measuredBlueIntensity],
     type: 'scatter',
     mode: 'markers',
     name: 'Your Sample',
-    marker: { size: 14, symbol: 'diamond' }
+    marker: { size: 14, symbol: 'diamond', color: '#ef4444' }
   };
 
   const layout = {
-    title: `y = ${SLOPE}x + (${INTERCEPT})<br>R² = ${R_SQUARED}`,
-    xaxis: { title: 'MDA Concentration (µM)' },
-    yaxis: { title: 'Absorbance' },
+    title: `Blue Intensity = ${SLOPE.toFixed(2)} × [MDA] + ${INTERCEPT.toFixed(1)}<br>R² = ${R_SQUARED.toFixed(4)}`,
+    xaxis: { 
+      title: 'MDA Concentration (µM)',
+      range: [0, 50],
+      showgrid: true,
+      gridcolor: '#f0f0f0'
+    },
+    yaxis: { 
+      title: 'Blue Channel Intensity (0-255)',
+      range: [80, 260],  // Start from 80 to show baseline better
+      showgrid: true,
+      gridcolor: '#f0f0f0'
+    },
     margin: { t: 80, b: 60, l: 60, r: 40 },
     plot_bgcolor: '#ffffff',
-    paper_bgcolor: '#ffffff'
+    paper_bgcolor: '#ffffff',
+    showlegend: true
   };
 
   Plotly.newPlot('calibrationPlot', [calibrationTrace, pointsTrace, sampleTrace], layout, { responsive: true, displayModeBar: false });
 }
 
 // Initial empty plot
-drawCalibrationCurve(0, 0);
+window.addEventListener('load', function() {
+  if (typeof Plotly !== 'undefined') {
+    drawCalibrationCurve(0, 0);
+  } else {
+    console.error('Plotly failed to load');
+    document.getElementById('calibrationPlot').innerHTML = '<div style="text-align:center; padding:50px; color:#dc2626;">Error loading chart library. Please refresh the page.</div>';
+  }
+});
 </script>
 </body>
 </html>
